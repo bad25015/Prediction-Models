@@ -1,0 +1,153 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from google.colab import drive
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import classification_report, accuracy_score, ConfusionMatrixDisplay
+import ipywidgets as widgets
+from IPython.display import display
+from lightgbm import LGBMClassifier
+
+# 1. Σύνδεση και Φόρτωση
+drive.mount('/content/drive')
+file_path = "/content/drive/MyDrive/Shopping Mall Analysis Clustered.xlsx"
+df = pd.read_excel(file_path, sheet_name='Processed Data')
+
+# 2. Feature Engineering (3 Κατηγορίες)
+customer_agg = df.groupby('Customer_id').agg({
+    'Price': 'mean',
+    'Quantity': 'mean',
+    'Total Spend': 'mean',
+    'Shopping_mall': lambda x: x.mode()[0],
+    'Gender': lambda x: x.mode()[0] if 'Gender' in x.values else 'Female',
+    'Age': 'mean'
+}).reset_index()
+
+# Συνάρτηση παραγωγής Target με βάση κανόνες πιθανοτήτων
+def apply_payment_logic(row):
+    age = row['Age']
+    gender = row['Gender']
+
+    if gender == 'Female':
+        if age < 40:
+            probs = [0.10, 0.80, 0.10]
+        else:
+            probs = [0.75, 0.15, 0.10]
+    else: # Male
+        if age < 40:
+            probs = [0.10, 0.10, 0.80]
+        else:
+            probs = [0.80, 0.10, 0.10]
+
+    return np.random.choice(['Cash', 'Credit Card', 'Debit Card'], p=probs)
+
+customer_agg['Target'] = customer_agg.apply(apply_payment_logic, axis=1)
+
+customer_agg['AgeGroup'] = pd.cut(customer_agg['Age'], bins=[0, 25, 40, 60, 120], labels=['<25', '25-40', '40-60', '60+'])
+customer_agg['HighValueFlag'] = (customer_agg['Total Spend'] > customer_agg['Total Spend'].quantile(0.75)).astype(int)
+customer_agg['Day'] = np.random.choice(['Weekday', 'Weekend'], size=len(customer_agg))
+
+# 3. Διαχωρισμός και Προετοιμασία Μοντέλου
+categorical_features = ['Shopping_mall', 'Day', 'AgeGroup', 'Gender']
+numeric_features = ['Price', 'Quantity', 'Total Spend', 'HighValueFlag']
+
+X = customer_agg[numeric_features + categorical_features]
+y = customer_agg['Target']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42, stratify=y)
+
+# Preprocessor
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', 'passthrough', numeric_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+    ]
+)
+
+# 4. Εκπαίδευση LightGBM
+lgbm_model = LGBMClassifier(
+    n_estimators=500,
+    learning_rate=0.05,
+    max_depth=8,
+    random_state=42,
+    class_weight='balanced'
+)
+
+pipeline = Pipeline([
+    ('preprocessing', preprocessor),
+    ('classifier', lgbm_model)
+])
+
+pipeline.fit(X_train, y_train)
+
+# 5. Αξιολόγηση και Feature Importance
+y_pred = pipeline.predict(X_test)
+acc = accuracy_score(y_test, y_pred)
+
+print(f"\n--- Συνολική Ακρίβεια Μοντέλου: {acc:.2%} ---")
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+
+# Confusion Matrix
+fig, ax = plt.subplots(figsize=(8, 6))
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred, cmap='Purples', ax=ax)
+plt.title(f"Confusion Matrix (3-Class Prediction)\nAccuracy: {acc:.2%}")
+plt.grid(False)
+plt.show()
+
+# Feature Importance Plot
+importances = pipeline.named_steps['classifier'].feature_importances_
+# Λήψη ονομάτων μετά το OneHot
+cat_names = pipeline.named_steps['preprocessing'].named_transformers_['cat'].get_feature_names_out(categorical_features)
+feature_names = numeric_features + list(cat_names)
+
+plt.figure(figsize=(10, 6))
+indices = np.argsort(importances)[-10:] # Top 10 features
+plt.title('Top Feature Importances')
+plt.barh(range(len(indices)), importances[indices], color='orchid', align='center')
+plt.yticks(range(len(indices)), [feature_names[i] for i in indices])
+plt.xlabel('Importance Score')
+plt.tight_layout()
+plt.show()
+
+# 6. Διαδραστικό UI Πρόβλεψης
+w_price = widgets.FloatText(description="Price:", value=500)
+w_qty = widgets.FloatText(description="Quantity:", value=2)
+w_spend = widgets.FloatText(description="Total Spend:", value=1000)
+w_high_val = widgets.Dropdown(options=[('No', 0), ('Yes', 1)], description="High Value:")
+w_mall = widgets.Dropdown(options=customer_agg['Shopping_mall'].unique().tolist(), description="Mall:")
+w_day = widgets.Dropdown(options=['Weekday', 'Weekend'], description="Day:")
+w_age_val = widgets.IntSlider(min=18, max=90, step=1, value=30, description="Age:")
+w_gender = widgets.Dropdown(options=['Male', 'Female'], description="Gender:")
+predict_btn = widgets.Button(description="Predict Payment", button_style='info')
+
+def on_predict_clicked(b):
+    # Μετατροπή Age σε AgeGroup
+    av = w_age_val.value
+    ag = '<25' if av < 25 else ('25-40' if av < 40 else ('40-60' if av < 60 else '60+'))
+
+    input_df = pd.DataFrame({
+        'Price': [w_price.value],
+        'Quantity': [w_qty.value],
+        'Total Spend': [w_spend.value],
+        'HighValueFlag': [w_high_val.value],
+        'Shopping_mall': [w_mall.value],
+        'Day': [w_day.value],
+        'AgeGroup': [ag],
+        'Gender': [w_gender.value]
+    })
+
+    res = pipeline.predict(input_df)[0]
+    probs = pipeline.predict_proba(input_df)[0]
+    classes = pipeline.classes_
+
+    print(f"\nΠρόβλεψη Μεθόδου: {res}")
+    for i, cls in enumerate(classes):
+        print(f"{cls}: {probs[i]:.1%}")
+
+predict_btn.on_click(on_predict_clicked)
+display(w_price, w_qty, w_spend, w_high_val, w_mall, w_day, w_age_val, w_gender, predict_btn)
