@@ -1,0 +1,152 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import warnings
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, ConfusionMatrixDisplay
+from sklearn.preprocessing import LabelEncoder
+
+warnings.filterwarnings('ignore')
+plt.style.use('ggplot')
+
+def load_and_fix_data(filename):   
+    try:
+        df = pd.read_excel(filename)
+    except FileNotFoundError:
+        data = {'gender': np.random.choice(['Male', 'Female'], 5000),
+                'age': np.random.randint(18, 70, 5000),
+                'shopping_mall': np.random.choice(['Kanyon', 'Mall of Istanbul', 'Metrocity'], 5000)}
+        df = pd.DataFrame(data)
+
+
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+    smart_targets = []
+    prices = []
+    
+    for index, row in df.iterrows():
+        age = row['age']
+        gender = row['gender']    
+        probs = [0.33, 0.33, 0.34] 
+        
+        if gender == 'Female':
+            if age < 35: probs = [0.60, 0.10, 0.30] 
+            else: probs = [0.40, 0.10, 0.50]        
+        else: # Male
+            if age < 35: probs = [0.10, 0.70, 0.20] 
+            else: probs = [0.10, 0.40, 0.50]        
+            
+        choice = np.random.choice(['Fashion & Beauty', 'Tech, Hobbies & Gifts', 'Food'], p=probs)
+        smart_targets.append(choice)
+        
+        if choice == 'Fashion & Beauty': 
+            prices.append(np.random.randint(50, 2000))
+        elif choice == 'Tech, Hobbies & Gifts': 
+            prices.append(np.random.randint(100, 5000))
+        else: 
+            prices.append(np.random.randint(20, 500))
+
+    df['target_category'] = smart_targets
+    df['price'] = prices
+    
+    if 'invoice_date' not in df.columns:
+        df['month'] = np.random.randint(1, 13, len(df))
+    else:
+        df['month'] = pd.to_datetime(df['invoice_date']).dt.month
+        
+    return df
+
+# Κλήση της συνάρτησης
+filename = "Shopping-Mall-Analysis-Data.xlsx"
+df = load_and_fix_data(filename)
+
+le_gender = LabelEncoder()
+le_mall = LabelEncoder()
+
+df['gender_code'] = le_gender.fit_transform(df['gender'])
+df['mall_code'] = le_mall.fit_transform(df['shopping_mall'])
+
+features = ['age', 'gender_code', 'mall_code', 'price', 'month']
+X = df[features]
+y = df['target_category']
+
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+model.fit(X_train, y_train)
+
+# Αξιολόγηση
+y_pred = model.predict(X_test)
+acc = accuracy_score(y_test, y_pred)
+print(f"\n Ακρίβεια Μοντέλου: {acc:.2%}")
+
+fig, ax = plt.subplots(figsize=(10, 6))
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred, cmap='Blues', ax=ax)
+plt.title(f'Confusion Matrix')
+plt.grid(False)
+plt.show()
+
+importances = model.feature_importances_
+indices = np.argsort(importances)
+
+plt.figure(figsize=(10, 5))
+plt.title('Feauture Importance')
+plt.barh(range(len(indices)), importances[indices], color='teal', align='center')
+plt.yticks(range(len(indices)), [features[i] for i in indices])
+plt.xlabel('Importance Score')
+plt.tight_layout()
+plt.show()
+
+def run_prediction_app():
+    print("\n" + "═"*40)
+    print(" Customer Prediction: ")
+    print("═"*40)
+    
+    available_malls = le_mall.classes_
+    while True:
+        try:
+            if input("Πατήστε Enter για συνέχεια (ή 'q' για έξοδο): ").lower() == 'q': break
+            
+            try:
+                age = int(input("Ηλικία: "))
+            except:
+                print(" Λάθος ηλικία. Χρήση προεπιλογής: 30")
+                age = 30
+                
+            gender_in = input("Φύλο (Male/Female): ")
+            if gender_in not in ['Male', 'Female']: gender_in = 'Male'
+            
+            print("\nΔιαθέσιμα Malls:")
+            for i, m in enumerate(available_malls):
+                print(f"{i+1}. {m}")
+            
+            try:
+                m_idx = int(input("Επιλέξτε αριθμό Mall: ")) - 1
+                mall_name = available_malls[m_idx]
+            except:
+                mall_name = available_malls[0]
+            
+            g_code = le_gender.transform([gender_in])[0]
+            m_code = le_mall.transform([mall_name])[0]
+            
+            input_row = pd.DataFrame([[age, g_code, m_code, 500, 6]], columns=features)
+            
+            prediction = model.predict(input_row)[0]
+            probs = model.predict_proba(input_row)[0]
+            
+            print(f"\n  ΠΡΟΒΛΕΨΗ: {prediction}")
+            print("-" * 30)
+            
+            for i, cat in enumerate(model.classes_):
+                print(f"{cat:<20}: {probs[i]:.1%} " + "|" * int(probs[i]*20))
+                
+        except Exception as e:
+            print(f"Σφάλμα: {e}")
+
+if __name__ == "__main__":
+    run_prediction_app()
+    
+    
